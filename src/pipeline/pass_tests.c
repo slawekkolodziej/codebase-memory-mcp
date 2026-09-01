@@ -261,6 +261,39 @@ static int create_tests_edges(cbm_pipeline_ctx_t *ctx) {
     return count;
 }
 
+/* Remove one exact `__tests__/` directory segment from a derived production
+ * candidate.  The co-located candidate is always tried first, so repositories
+ * that intentionally contain both layouts retain deterministic precedence. */
+static char *without_js_tests_dir(const char *path) {
+    static const char segment[] = "__tests__/";
+    const char *found = path;
+    while ((found = strstr(found, segment)) != NULL) {
+        if (found == path || found[-1] == '/') {
+            size_t prefix_len = (size_t)(found - path);
+            size_t suffix_len = strlen(found + SLEN(segment));
+            char *result = malloc(prefix_len + suffix_len + SKIP_ONE);
+            if (!result) {
+                return NULL;
+            }
+            memcpy(result, path, prefix_len);
+            memcpy(result + prefix_len, found + SLEN(segment), suffix_len + SKIP_ONE);
+            return result;
+        }
+        found += SLEN(segment);
+    }
+    return NULL;
+}
+
+static const cbm_gbuf_node_t *find_file_for_path(cbm_pipeline_ctx_t *ctx, const char *path) {
+    char *qn = cbm_pipeline_fqn_compute(ctx->project_name, path, "__file__");
+    if (!qn) {
+        return NULL;
+    }
+    const cbm_gbuf_node_t *node = cbm_gbuf_find_by_qn(ctx->gbuf, qn);
+    free(qn);
+    return node;
+}
+
 /* Create TESTS_FILE edges from test File nodes to production File nodes. */
 static int create_tests_file_edges(cbm_pipeline_ctx_t *ctx) {
     int count = 0;
@@ -282,9 +315,14 @@ static int create_tests_file_edges(cbm_pipeline_ctx_t *ctx) {
             continue;
         }
 
-        char *prod_qn = cbm_pipeline_fqn_compute(ctx->project_name, prod_path, "__file__");
-        const cbm_gbuf_node_t *prod_node = cbm_gbuf_find_by_qn(ctx->gbuf, prod_qn);
-        free(prod_qn);
+        const cbm_gbuf_node_t *prod_node = find_file_for_path(ctx, prod_path);
+        if (!prod_node) {
+            char *mirrored_path = without_js_tests_dir(prod_path);
+            if (mirrored_path) {
+                prod_node = find_file_for_path(ctx, mirrored_path);
+                free(mirrored_path);
+            }
+        }
         free(prod_path);
 
         if (prod_node && fnode->id != prod_node->id) {

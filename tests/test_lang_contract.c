@@ -1110,6 +1110,45 @@ static int edge_present(const LangFile *files, int nfiles, const char *edge, int
     return got >= floor;
 }
 
+static int file_edge_between_paths(const LangFile *files, int nfiles, const char *edge_type,
+                                   const char *source_path, const char *target_path) {
+    LangProj lp;
+    cbm_store_t *store = lang_index_files(&lp, files, nfiles);
+    cbm_node_t *nodes = NULL;
+    int node_count = 0;
+    int64_t source_id = 0;
+    int64_t target_id = 0;
+    int matches = -1;
+    if (store && cbm_store_find_nodes_by_label(store, lp.project, "File", &nodes, &node_count) ==
+                     CBM_STORE_OK) {
+        for (int i = 0; i < node_count; i++) {
+            if (nodes[i].file_path && strcmp(nodes[i].file_path, source_path) == 0) {
+                source_id = nodes[i].id;
+            }
+            if (nodes[i].file_path && strcmp(nodes[i].file_path, target_path) == 0) {
+                target_id = nodes[i].id;
+            }
+        }
+        matches = 0;
+        if (source_id > 0 && target_id > 0) {
+            cbm_edge_t *edges = NULL;
+            int edge_count = 0;
+            if (cbm_store_find_edges_by_source_type(store, source_id, edge_type, &edges,
+                                                    &edge_count) == CBM_STORE_OK) {
+                for (int i = 0; i < edge_count; i++) {
+                    if (edges[i].target_id == target_id) {
+                        matches++;
+                    }
+                }
+            }
+            cbm_store_free_edges(edges, edge_count);
+        }
+    }
+    cbm_store_free_nodes(nodes, node_count);
+    lang_cleanup(&lp, store);
+    return matches;
+}
+
 /* DEFINES — File -> definition, once per top-level def (purely structural). */
 TEST(contract_edge_defines) {
     static const LangFile f[] = {{"main.py",
@@ -1196,6 +1235,42 @@ TEST(contract_edge_tests_file) {
                         "def test_add():\n    assert add(2, 3) == 5\n\n\n"
                         "def test_multiply():\n    assert multiply(2, 3) == 6\n"}};
     ASSERT_TRUE(edge_present(f, 2, "TESTS_FILE", 1));
+    PASS();
+}
+
+TEST(contract_edge_tests_file_mirrored_tests_directory) {
+    static const LangFile f[] = {
+        {"src/entities/context.ts", "export const context = 'production';\n"},
+        {"src/__tests__/entities/context.spec.ts",
+         "import { context } from '../../entities/context';\nvoid context;\n"}};
+    ASSERT_EQ(file_edge_between_paths(f, 2, "TESTS_FILE", "src/__tests__/entities/context.spec.ts",
+                                      "src/entities/context.ts"),
+              1);
+    PASS();
+}
+
+TEST(contract_edge_tests_file_nested_tests_directory) {
+    static const LangFile f[] = {
+        {"src/entities/context.ts", "export const context = 'production';\n"},
+        {"src/entities/__tests__/context.test.ts",
+         "import { context } from '../context';\nvoid context;\n"}};
+    ASSERT_EQ(file_edge_between_paths(f, 2, "TESTS_FILE", "src/entities/__tests__/context.test.ts",
+                                      "src/entities/context.ts"),
+              1);
+    PASS();
+}
+
+TEST(contract_edge_tests_file_colocated_precedes_mirrored) {
+    static const LangFile f[] = {
+        {"src/entities/context.ts", "export const context = 'mirrored';\n"},
+        {"src/entities/__tests__/context.ts", "export const context = 'colocated';\n"},
+        {"src/entities/__tests__/context.spec.ts", "void 0;\n"}};
+    ASSERT_EQ(file_edge_between_paths(f, 3, "TESTS_FILE", "src/entities/__tests__/context.spec.ts",
+                                      "src/entities/__tests__/context.ts"),
+              1);
+    ASSERT_EQ(file_edge_between_paths(f, 3, "TESTS_FILE", "src/entities/__tests__/context.spec.ts",
+                                      "src/entities/context.ts"),
+              0);
     PASS();
 }
 
@@ -1879,6 +1954,9 @@ SUITE(lang_contract) {
     RUN_TEST(contract_edge_implements);
     RUN_TEST(contract_edge_decorates);
     RUN_TEST(contract_edge_tests_file);
+    RUN_TEST(contract_edge_tests_file_mirrored_tests_directory);
+    RUN_TEST(contract_edge_tests_file_nested_tests_directory);
+    RUN_TEST(contract_edge_tests_file_colocated_precedes_mirrored);
     RUN_TEST(contract_edge_handles);
     RUN_TEST(contract_edge_http_calls);
     RUN_TEST(contract_edge_async_calls);
