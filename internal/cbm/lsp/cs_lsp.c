@@ -489,12 +489,12 @@ const char *cs_resolve_type_name(CSLSPContext *ctx, const char *raw) {
              * corpus (#1669 follow-up). The iterator degrades to the same full
              * scan on an unfinalized registry, and best-score ties keep the
              * scan's first-in-registration-order winner via best_idx. */
-            CBMTypeShortIter ts_it;
+            CBMTypeNameIter ts_it;
             int i;
             if (ctx->registry) {
                 cbm_registry_types_by_short_name(ctx->registry, the_short, &ts_it);
             }
-            while (ctx->registry && (i = cbm_type_short_iter_next(&ts_it)) >= 0) {
+            while (ctx->registry && (i = cbm_type_name_iter_next(&ts_it)) >= 0) {
                 const CBMRegisteredType *cand = &ctx->registry->types[i];
                 if (!cand->short_name || strcmp(cand->short_name, the_short) != 0)
                     continue;
