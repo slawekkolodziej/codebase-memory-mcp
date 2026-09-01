@@ -19,6 +19,18 @@ static int has_data_flow(cbm_gbuf_t *gb, int64_t source_id, int64_t target_id) {
     return 0;
 }
 
+static int has_handles(cbm_gbuf_t *gb, int64_t source_id, int64_t target_id) {
+    const cbm_gbuf_edge_t **edges = NULL;
+    int count = 0;
+    cbm_gbuf_find_edges_by_source_type(gb, source_id, "HANDLES", &edges, &count);
+    for (int i = 0; i < count; i++) {
+        if (edges[i]->target_id == target_id) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 TEST(infrascan_http_route_literal_guard_rejects_filesystem_paths) {
     ASSERT_FALSE(cbm_service_pattern_is_http_route_literal("/etc/crio/crio.conf", "requests.get"));
     ASSERT_FALSE(
@@ -113,8 +125,59 @@ TEST(infrascan_http_calls_join_matching_handler_route) {
     PASS();
 }
 
+TEST(infrascan_root_route_rejects_unrelated_infra_url) {
+    cbm_gbuf_t *gb = cbm_gbuf_new("test", "/tmp/cbm_infrascan_root_reject");
+    ASSERT_NOT_NULL(gb);
+
+    int64_t root_route =
+        cbm_gbuf_upsert_node(gb, "Route", "/", "__route__ANY__/", "packages/api/src/app.ts", 0, 0,
+                             "{\"method\":\"ANY\"}");
+    int64_t handler = cbm_gbuf_upsert_node(gb, "Function", "app", "test.app",
+                                           "packages/api/src/app.ts", 1, 3, "{}");
+    int64_t asset_route =
+        cbm_gbuf_upsert_node(gb, "Route", "https://files.example/assets/image.jpg",
+                             "__route__infra__https://files.example/assets/image.jpg",
+                             "archive/fixture.json", 0, 0, "{\"source\":\"infra\"}");
+    ASSERT_GT(root_route, 0);
+    ASSERT_GT(handler, 0);
+    ASSERT_GT(asset_route, 0);
+    cbm_gbuf_insert_edge(gb, handler, root_route, "HANDLES", "{\"handler\":\"test.app\"}");
+
+    cbm_pipeline_create_route_nodes(gb);
+
+    ASSERT_FALSE(has_handles(gb, handler, asset_route));
+    cbm_gbuf_free(gb);
+    PASS();
+}
+
+TEST(infrascan_root_route_accepts_matching_service_root) {
+    cbm_gbuf_t *gb = cbm_gbuf_new("test", "/tmp/cbm_infrascan_root_accept");
+    ASSERT_NOT_NULL(gb);
+
+    int64_t root_route =
+        cbm_gbuf_upsert_node(gb, "Route", "/", "__route__ANY__/", "services/orders-service/app.ts",
+                             0, 0, "{\"method\":\"ANY\"}");
+    int64_t handler = cbm_gbuf_upsert_node(gb, "Function", "app", "test.app",
+                                           "services/orders-service/app.ts", 1, 3, "{}");
+    int64_t infra_root = cbm_gbuf_upsert_node(gb, "Route", "https://orders-service.example/",
+                                              "__route__infra__https://orders-service.example/",
+                                              "deploy.yaml", 0, 0, "{\"source\":\"infra\"}");
+    ASSERT_GT(root_route, 0);
+    ASSERT_GT(handler, 0);
+    ASSERT_GT(infra_root, 0);
+    cbm_gbuf_insert_edge(gb, handler, root_route, "HANDLES", "{\"handler\":\"test.app\"}");
+
+    cbm_pipeline_create_route_nodes(gb);
+
+    ASSERT_TRUE(has_handles(gb, handler, infra_root));
+    cbm_gbuf_free(gb);
+    PASS();
+}
+
 SUITE(infrascan) {
     RUN_TEST(infrascan_http_route_literal_guard_rejects_filesystem_paths);
     RUN_TEST(infrascan_route_nodes_skip_bad_http_url_paths);
     RUN_TEST(infrascan_http_calls_join_matching_handler_route);
+    RUN_TEST(infrascan_root_route_rejects_unrelated_infra_url);
+    RUN_TEST(infrascan_root_route_accepts_matching_service_root);
 }

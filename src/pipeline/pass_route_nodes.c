@@ -350,7 +350,11 @@ static int match_one_infra_route(cbm_gbuf_t *gb, const cbm_gbuf_node_t *infra,
         int path_match =
             (strlen(handler_path) > SKIP_ONE && (strstr(infra_path, handler_path) != NULL ||
                                                  strstr(handler_path, infra_path) != NULL));
-        int root_svc_match = (strcmp(handler_path, "/") == 0);
+        /* A root prefix is only meaningful for the service that owns it.  Without
+         * independent service/file evidence, `ANY /` would otherwise match every
+         * full URL discovered in infrastructure files (including unrelated asset
+         * hosts) and copy its handlers onto those Route nodes. */
+        int root_svc_match = (strcmp(handler_path, "/") == 0 && file_matches);
         if (path_match || root_svc_match) {
             const cbm_gbuf_edge_t **fn_handles = NULL;
             int fn_hcount = 0;
