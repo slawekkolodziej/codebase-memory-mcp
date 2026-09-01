@@ -57,6 +57,19 @@ static bool str_ends_with(const char *s, size_t slen, const char *suffix) {
     return slen >= sflen && strcmp(s + slen - sflen, suffix) == 0;
 }
 
+/* JS/TS test callbacks are usually anonymous, so calls inside them are
+ * attributed to the enclosing module or a helper whose name does not follow a
+ * test-function convention.  For recognized JS/TS test paths, path evidence is
+ * therefore sufficient; other languages retain their name conventions. */
+static bool is_js_ts_test_path(const char *path) {
+    if (!path || !cbm_is_test_path(path)) {
+        return false;
+    }
+    size_t len = strlen(path);
+    return str_ends_with(path, len, ".js") || str_ends_with(path, len, ".jsx") ||
+           str_ends_with(path, len, ".ts") || str_ends_with(path, len, ".tsx");
+}
+
 /* Check if a file path looks like a test file (language-agnostic). */
 bool cbm_is_test_path(const char *path) {
     if (!path) {
@@ -238,7 +251,7 @@ static int create_tests_edges(cbm_pipeline_ctx_t *ctx) {
             continue;
         }
 
-        if (!cbm_is_test_func_name(src->name)) {
+        if (!is_js_ts_test_path(src->file_path) && !cbm_is_test_func_name(src->name)) {
             continue;
         }
 

@@ -910,6 +910,43 @@ TEST(es_tests_crossfile_typescript) {
     PASS();
 }
 
+/* Vitest/Jest callbacks are anonymous; calls in their bodies are attributed to
+ * test-file code rather than a synthetic function named `it` or `test`. */
+TEST(es_tests_anonymous_vitest_typescript) {
+    static const ES_LangFile f[] = {
+        {"service.ts",
+         "export function divide(a: number, b: number): number {\n    return a / b;\n}\n"},
+        {"service.spec.ts", "import { describe, expect, it } from 'vitest';\n"
+                            "import { divide } from './service';\n\n"
+                            "describe('divide', () => {\n"
+                            "  it('divides numbers', () => {\n"
+                            "    expect(divide(6, 2)).toBe(3);\n"
+                            "  });\n"
+                            "});\n"}};
+    ASSERT_TRUE(es_edge_present(f, 2, "TESTS", 1));
+    PASS();
+}
+
+TEST(es_tests_named_helper_in_typescript_test_file) {
+    static const ES_LangFile f[] = {
+        {"service.ts",
+         "export function divide(a: number, b: number): number {\n    return a / b;\n}\n"},
+        {"service.spec.ts", "import { divide } from './service';\n\n"
+                            "function exerciseDivide(): number {\n  return divide(8, 2);\n}\n"}};
+    ASSERT_EQ(es_exact_edge_by_name(f, 2, "TESTS", "exerciseDivide", "divide"), 1);
+    PASS();
+}
+
+TEST(es_tests_non_test_typescript_helper_is_not_test_code) {
+    static const ES_LangFile f[] = {
+        {"service.ts",
+         "export function divide(a: number, b: number): number {\n    return a / b;\n}\n"},
+        {"support.ts", "import { divide } from './service';\n\n"
+                       "export function exerciseDivide(): number {\n  return divide(8, 2);\n}\n"}};
+    ASSERT_EQ(es_exact_edge_by_name(f, 2, "TESTS", "exerciseDivide", "divide"), 0);
+    PASS();
+}
+
 /* ══════════════════════════════════════════════════════════════════
  * SUITE registration
  * ══════════════════════════════════════════════════════════════════ */
@@ -977,4 +1014,7 @@ SUITE(edge_structural) {
     /* Expected GREEN: Python + TypeScript test file conventions. */
     RUN_TEST(es_tests_crossfile_python);
     RUN_TEST(es_tests_crossfile_typescript);
+    RUN_TEST(es_tests_anonymous_vitest_typescript);
+    RUN_TEST(es_tests_named_helper_in_typescript_test_file);
+    RUN_TEST(es_tests_non_test_typescript_helper_is_not_test_code);
 }
