@@ -247,11 +247,26 @@ typedef enum {
     CBM_SOURCE_ORIGIN_PREPROCESSED,
 } CBMSourceOrigin;
 
+/* Route registrations may name a handler or define it inline.  Keeping this
+ * separate from the generic argument list prevents middleware arguments from
+ * being mistaken for the endpoint handler. */
+typedef enum {
+    CBM_ROUTE_HANDLER_NONE = 0,
+    CBM_ROUTE_HANDLER_REFERENCE,
+    CBM_ROUTE_HANDLER_STRING,
+    CBM_ROUTE_HANDLER_INLINE,
+} CBMRouteHandlerKind;
+
 typedef struct {
-    const char *callee_name;            // raw callee text ("pkg.Func", "foo")
-    const char *enclosing_func_qn;      // QN of enclosing function (or module QN)
-    const char *first_string_arg;       // first string literal argument (URL, topic, key) or NULL
-    const char *second_arg_name;        // second argument identifier (handler ref) or NULL
+    const char *callee_name;       // raw callee text ("pkg.Func", "foo")
+    const char *enclosing_func_qn; // QN of enclosing function (or module QN)
+    const char *first_string_arg;  // first string literal argument (URL, topic, key) or NULL
+    const char *route_handler_ref; // selected named/string route handler or NULL
+    CBMRouteHandlerKind route_handler_kind;
+    int route_handler_arg_index;        // named argument index, or -1 when absent
+    int route_handler_start_line;       // exact 1-based handler argument line
+    uint32_t route_handler_start_byte;  // exact handler expression span
+    uint32_t route_handler_end_byte;    // exclusive
     CBMCallArg args[CBM_MAX_CALL_ARGS]; // first N arguments with expressions
     int arg_count;                      // number of captured arguments
     int loop_depth;                     // enclosing loop nesting at the call site

@@ -1777,6 +1777,165 @@ static cbm_store_t *index_parallel_fixture(LangProj *lp, const LangFile *meaning
     return lang_index_files(lp, files, n);
 }
 
+static int hono_handler_contract(bool parallel) {
+    static const LangFile meaningful[] = {
+        {"routes.ts", "const app: any = new Hono();\n"
+                      "function listUsers(c: any) { return c.json([]); }\n"
+                      "function authenticate(): any { return () => true; }\n"
+                      "function validator(kind: string, schema: any): any { return schema; }\n"
+                      "app.get('/named', listUsers);\n"
+                      "app.get('/middleware-ref', authenticate, listUsers);\n"
+                      "app.get('/middleware-call', authenticate(), listUsers);\n"
+                      "app.get('/inline', async (c: any) => c.json([]));\n"
+                      "new Hono().post(\n"
+                      "  '/contexts',\n"
+                      "  validator('json', {}),\n"
+                      "  async (c: any) => c.json({ ok: true })\n"
+                      ");\n"}};
+    LangProj lp;
+    cbm_store_t *store = parallel ? index_parallel_fixture(&lp, meaningful, 1)
+                                  : lang_index_files(&lp, meaningful, 1);
+    if (!store) {
+        lang_cleanup(&lp, store);
+        return 0;
+    }
+
+    const char *route_names[] = {"/named", "/middleware-ref", "/middleware-call", "/inline",
+                                 "/contexts"};
+    int64_t route_ids[5] = {0};
+    int64_t list_users_id = 0;
+    int64_t authenticate_id = 0;
+    cbm_node_t *routes = NULL;
+    cbm_node_t *functions = NULL;
+    int route_count = 0;
+    int function_count = 0;
+    int ok = 1;
+
+    if (cbm_store_find_nodes_by_label(store, lp.project, "Route", &routes, &route_count) !=
+        CBM_STORE_OK) {
+        ok = 0;
+    }
+    for (int i = 0; i < route_count; i++) {
+        for (int ri = 0; ri < 5; ri++) {
+            if (routes[i].name && strcmp(routes[i].name, route_names[ri]) == 0) {
+                route_ids[ri] = routes[i].id;
+                const char *expected_method = ri == 4 ? "__route__POST__" : "__route__GET__";
+                if (!routes[i].qualified_name || strncmp(routes[i].qualified_name, expected_method,
+                                                         strlen(expected_method)) != 0) {
+                    ok = 0;
+                }
+            }
+        }
+    }
+    if (cbm_store_find_nodes_by_label(store, lp.project, "Function", &functions, &function_count) !=
+        CBM_STORE_OK) {
+        ok = 0;
+    }
+    for (int i = 0; i < function_count; i++) {
+        if (functions[i].name && strcmp(functions[i].name, "listUsers") == 0) {
+            list_users_id = functions[i].id;
+        } else if (functions[i].name && strcmp(functions[i].name, "authenticate") == 0) {
+            authenticate_id = functions[i].id;
+        }
+    }
+    for (int ri = 0; ri < 5; ri++) {
+        if (route_ids[ri] == 0) {
+            ok = 0;
+        }
+    }
+
+    int named_hits[3] = {0};
+    int inline_hits[2] = {0};
+    int middleware_hits = 0;
+    cbm_edge_t *handles = NULL;
+    int handles_count = 0;
+    if (cbm_store_find_edges_by_type(store, lp.project, "HANDLES", &handles, &handles_count) !=
+        CBM_STORE_OK) {
+        ok = 0;
+    }
+    for (int i = 0; i < handles_count; i++) {
+        for (int ri = 0; ri < 3; ri++) {
+            if (handles[i].source_id == list_users_id && handles[i].target_id == route_ids[ri]) {
+                named_hits[ri]++;
+            }
+        }
+        if (handles[i].source_id == authenticate_id) {
+            middleware_hits++;
+        }
+        for (int ii = 0; ii < 2; ii++) {
+            int ri = ii + 3;
+            if (handles[i].target_id != route_ids[ri]) {
+                continue;
+            }
+            cbm_node_t source;
+            if (cbm_store_find_node_by_id(store, handles[i].source_id, &source) == CBM_STORE_OK) {
+                int expected_line = ii == 0 ? 8 : 12;
+                char line_prop[32];
+                char arg_prop[32];
+                snprintf(line_prop, sizeof(line_prop), "\"line\":%d", expected_line);
+                snprintf(arg_prop, sizeof(arg_prop), "\"arg_index\":%d", ii == 0 ? 1 : 2);
+                if (source.file_path && strcmp(source.file_path, "routes.ts") == 0 &&
+                    handles[i].properties_json &&
+                    strstr(handles[i].properties_json, "\"via\":\"inline_route_callback\"") &&
+                    strstr(handles[i].properties_json, line_prop) &&
+                    strstr(handles[i].properties_json, arg_prop) &&
+                    strstr(handles[i].properties_json, "\"start_byte\":") &&
+                    strstr(handles[i].properties_json, "\"end_byte\":")) {
+                    inline_hits[ii]++;
+                }
+                cbm_node_free_fields(&source);
+            }
+        }
+    }
+
+    int call_hits[5] = {0};
+    cbm_edge_t *calls = NULL;
+    int calls_count = 0;
+    if (cbm_store_find_edges_by_type(store, lp.project, "CALLS", &calls, &calls_count) !=
+        CBM_STORE_OK) {
+        ok = 0;
+    }
+    for (int i = 0; i < calls_count; i++) {
+        for (int ri = 0; ri < 5; ri++) {
+            if (calls[i].target_id == route_ids[ri]) {
+                call_hits[ri]++;
+            }
+        }
+    }
+    for (int ri = 0; ri < 3; ri++) {
+        ok = ok && named_hits[ri] == 1;
+    }
+    for (int ii = 0; ii < 2; ii++) {
+        ok = ok && inline_hits[ii] == 1;
+    }
+    for (int ri = 0; ri < 5; ri++) {
+        ok = ok && call_hits[ri] == 1;
+    }
+    ok = ok && middleware_hits == 0;
+
+    if (!ok) {
+        fprintf(stderr,
+                "  [HONO] %s named=%d/%d/%d inline=%d/%d middleware=%d "
+                "calls=%d/%d/%d/%d/%d\n",
+                parallel ? "parallel" : "sequential", named_hits[0], named_hits[1], named_hits[2],
+                inline_hits[0], inline_hits[1], middleware_hits, call_hits[0], call_hits[1],
+                call_hits[2], call_hits[3], call_hits[4]);
+    }
+
+    cbm_store_free_edges(calls, calls_count);
+    cbm_store_free_edges(handles, handles_count);
+    cbm_store_free_nodes(functions, function_count);
+    cbm_store_free_nodes(routes, route_count);
+    lang_cleanup(&lp, store);
+    return ok;
+}
+
+TEST(contract_hono_handlers_sequential_and_parallel) {
+    ASSERT_TRUE(hono_handler_contract(false));
+    ASSERT_TRUE(hono_handler_contract(true));
+    PASS();
+}
+
 /* GRAPHQL_CALLS + GRPC_CALLS + TRPC_CALLS + INFRA_MAPS — all parallel-path-only,
  * so they share one padded (>50-file) index. Each edge is triggered by an
  * independent in-repo symbol whose resolved QN carries the relevant library
@@ -1977,5 +2136,6 @@ SUITE(lang_contract) {
     RUN_TEST(contract_edge_commonjs_require_call_resolves_issue871);
     RUN_TEST(contract_edge_depends_on);
     RUN_TEST(contract_edge_parallel_service_edges);
+    RUN_TEST(contract_hono_handlers_sequential_and_parallel);
     RUN_TEST(contract_edge_file_changes_with);
 }

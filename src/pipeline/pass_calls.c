@@ -226,8 +226,16 @@ static void handle_route_registration(cbm_pipeline_ctx_t *ctx, const CBMCall *ca
              "{\"callee\":\"%s\",\"url_path\":\"%s\",\"via\":\"route_registration\"}", esc_cn,
              esc_fa);
     cbm_gbuf_insert_edge(ctx->gbuf, source_node->id, route_id, "CALLS", props);
-    if (call->second_arg_name != NULL && call->second_arg_name[0] != '\0') {
-        cbm_resolution_t hres = cbm_registry_resolve(ctx->registry, call->second_arg_name,
+    if (call->route_handler_kind == CBM_ROUTE_HANDLER_INLINE) {
+        char hprops[CBM_SZ_256];
+        snprintf(hprops, sizeof(hprops),
+                 "{\"via\":\"inline_route_callback\",\"line\":%d,\"arg_index\":%d,"
+                 "\"start_byte\":%u,\"end_byte\":%u}",
+                 call->route_handler_start_line, call->route_handler_arg_index,
+                 call->route_handler_start_byte, call->route_handler_end_byte);
+        cbm_gbuf_insert_edge(ctx->gbuf, source_node->id, route_id, "HANDLES", hprops);
+    } else if (call->route_handler_ref != NULL && call->route_handler_ref[0] != '\0') {
+        cbm_resolution_t hres = cbm_registry_resolve(ctx->registry, call->route_handler_ref,
                                                      module_qn, imp_keys, imp_vals, imp_count);
         if (hres.qualified_name != NULL && hres.qualified_name[0] != '\0') {
             const cbm_gbuf_node_t *handler = cbm_gbuf_find_by_qn(ctx->gbuf, hres.qualified_name);

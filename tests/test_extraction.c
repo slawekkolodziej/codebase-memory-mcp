@@ -3940,6 +3940,73 @@ static const CBMCall *find_call_by_callee(CBMFileResult *r, const char *callee) 
     return NULL;
 }
 
+static const CBMCall *find_call_by_route_path(CBMFileResult *r, const char *route_path) {
+    for (int i = 0; i < r->calls.count; i++) {
+        if (r->calls.items[i].first_string_arg &&
+            strcmp(r->calls.items[i].first_string_arg, route_path) == 0) {
+            return &r->calls.items[i];
+        }
+    }
+    return NULL;
+}
+
+TEST(extract_ts_route_handler_after_middleware) {
+    CBMFileResult *r =
+        extract("const app = new Hono();\n"
+                "function listUsers(c: any) { return c.json([]); }\n"
+                "function authenticate(c: any, next: any) { return next(); }\n"
+                "function validator(kind: string, schema: any): any { return schema; }\n"
+                "app.get('/named', listUsers);\n"
+                "app.get('/middleware-ref', authenticate, listUsers);\n"
+                "app.get('/middleware-call', authenticate(), listUsers);\n"
+                "app.get('/inline', async (c: any) => c.json([]));\n"
+                "new Hono().post(\n"
+                "  '/contexts',\n"
+                "  validator('json', {}),\n"
+                "  async (c: any) => c.json({ ok: true })\n"
+                ");\n",
+                CBM_LANG_TYPESCRIPT, "t", "routes.ts");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->has_error);
+
+    const CBMCall *named = find_call_by_route_path(r, "/named");
+    ASSERT_NOT_NULL(named);
+    ASSERT_EQ(named->route_handler_kind, CBM_ROUTE_HANDLER_REFERENCE);
+    ASSERT_STR_EQ(named->route_handler_ref, "listUsers");
+    ASSERT_EQ(named->route_handler_arg_index, 1);
+
+    const CBMCall *middleware_ref = find_call_by_route_path(r, "/middleware-ref");
+    ASSERT_NOT_NULL(middleware_ref);
+    ASSERT_EQ(middleware_ref->route_handler_kind, CBM_ROUTE_HANDLER_REFERENCE);
+    ASSERT_STR_EQ(middleware_ref->route_handler_ref, "listUsers");
+    ASSERT_EQ(middleware_ref->route_handler_arg_index, 2);
+
+    const CBMCall *middleware_call = find_call_by_route_path(r, "/middleware-call");
+    ASSERT_NOT_NULL(middleware_call);
+    ASSERT_EQ(middleware_call->route_handler_kind, CBM_ROUTE_HANDLER_REFERENCE);
+    ASSERT_STR_EQ(middleware_call->route_handler_ref, "listUsers");
+    ASSERT_EQ(middleware_call->route_handler_arg_index, 2);
+
+    const CBMCall *inline_call = find_call_by_route_path(r, "/inline");
+    ASSERT_NOT_NULL(inline_call);
+    ASSERT_EQ(inline_call->route_handler_kind, CBM_ROUTE_HANDLER_INLINE);
+    ASSERT_NULL(inline_call->route_handler_ref);
+    ASSERT_EQ(inline_call->route_handler_arg_index, 1);
+    ASSERT_EQ(inline_call->route_handler_start_line, 8);
+    ASSERT_GT(inline_call->route_handler_end_byte, inline_call->route_handler_start_byte);
+
+    const CBMCall *fluent = find_call_by_route_path(r, "/contexts");
+    ASSERT_NOT_NULL(fluent);
+    ASSERT_EQ(fluent->route_handler_kind, CBM_ROUTE_HANDLER_INLINE);
+    ASSERT_NULL(fluent->route_handler_ref);
+    ASSERT_EQ(fluent->route_handler_arg_index, 2);
+    ASSERT_EQ(fluent->route_handler_start_line, 12);
+    ASSERT_GT(fluent->route_handler_end_byte, fluent->route_handler_start_byte);
+
+    cbm_free_result(r);
+    PASS();
+}
+
 /* Issue #1009: URL-builder helper pattern — a function returning a URL-shaped
  * literal, consumed as client(buildPath(id)). The builder's URL is recorded in
  * the per-file constant map and resolved at the call site, for both return
@@ -6809,6 +6876,7 @@ SUITE(extraction) {
     RUN_TEST(arkts_ts_compat);
     RUN_TEST(extract_java_jaxrs_path_composition_issue1005);
     RUN_TEST(extract_ts_template_string_url_issue1006);
+    RUN_TEST(extract_ts_route_handler_after_middleware);
     RUN_TEST(extract_go_binary_concat_url_issue1249);
     RUN_TEST(extract_go_binary_concat_url_no_literal_suffix_issue1249);
     RUN_TEST(extract_ts_url_builder_issue1009);

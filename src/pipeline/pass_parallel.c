@@ -1548,11 +1548,9 @@ static bool is_path_keyword(const char *keyword) {
     return false;
 }
 
-static const char *find_route_path_in_args(const CBMCall *call, const char **out_handler) {
-    *out_handler = NULL;
+static const char *find_route_path_in_args(const CBMCall *call) {
     /* 1. First string arg starting with / */
     if (call->first_string_arg && call->first_string_arg[0] == '/') {
-        *out_handler = call->second_arg_name;
         return call->first_string_arg;
     }
     /* 2. Keyword args (prefix=, path=, route=, etc.) */
@@ -1569,19 +1567,6 @@ static const char *find_route_path_in_args(const CBMCall *call, const char **out
     }
     if (!found) {
         return NULL;
-    }
-    /* 3. Handler: first identifier arg that's not a path/keyword */
-    for (int ai = 0; ai < call->arg_count; ai++) {
-        const CBMCallArg *ca = &call->args[ai];
-        if (!ca->expr || ca->expr[0] == '/' || ca->expr[0] == '"' || ca->expr[0] == '\'') {
-            continue;
-        }
-        if (ca->keyword && (strcmp(ca->keyword, "prefix") == 0 ||
-                            strcmp(ca->keyword, "name") == 0 || strcmp(ca->keyword, "tags") == 0)) {
-            continue;
-        }
-        *out_handler = ca->expr;
-        break;
     }
     return found;
 }
@@ -1701,9 +1686,9 @@ static void emit_normal_calls_edge(cbm_gbuf_t *gbuf, const cbm_gbuf_node_t *sour
 /* Create Route node + CALLS + HANDLES edges for a route registration call. */
 static void emit_route_registration(cbm_gbuf_t *gbuf, const cbm_gbuf_node_t *source,
                                     const CBMCall *call, const char *route_path,
-                                    const char *handler_ref, const char *module_qn,
-                                    const cbm_registry_t *registry, const cbm_gbuf_t *main_gbuf,
-                                    const char **ik, const char **iv, int ic) {
+                                    const char *module_qn, const cbm_registry_t *registry,
+                                    const cbm_gbuf_t *main_gbuf, const char **ik, const char **iv,
+                                    int ic) {
     const char *method = cbm_service_pattern_route_method(call->callee_name);
     char rqn[CBM_ROUTE_QN_SIZE];
     char cpath[CBM_SZ_256];
@@ -1721,8 +1706,17 @@ static void emit_route_registration(cbm_gbuf_t *gbuf, const cbm_gbuf_node_t *sou
              "{\"callee\":\"%s\",\"url_path\":\"%s\",\"via\":\"route_registration\"}", esc_cn,
              esc_rp);
     cbm_gbuf_insert_edge(gbuf, source->id, rid, "CALLS", props);
-    if (handler_ref && handler_ref[0] != '\0') {
-        cbm_resolution_t hres = cbm_registry_resolve(registry, handler_ref, module_qn, ik, iv, ic);
+    if (call->route_handler_kind == CBM_ROUTE_HANDLER_INLINE) {
+        char hp[CBM_SZ_256];
+        snprintf(hp, sizeof(hp),
+                 "{\"via\":\"inline_route_callback\",\"line\":%d,\"arg_index\":%d,"
+                 "\"start_byte\":%u,\"end_byte\":%u}",
+                 call->route_handler_start_line, call->route_handler_arg_index,
+                 call->route_handler_start_byte, call->route_handler_end_byte);
+        cbm_gbuf_insert_edge(gbuf, source->id, rid, "HANDLES", hp);
+    } else if (call->route_handler_ref && call->route_handler_ref[0] != '\0') {
+        cbm_resolution_t hres =
+            cbm_registry_resolve(registry, call->route_handler_ref, module_qn, ik, iv, ic);
         if (hres.qualified_name && hres.qualified_name[0] != '\0') {
             const cbm_gbuf_node_t *h = cbm_gbuf_find_by_qn(main_gbuf, hres.qualified_name);
             if (h) {
@@ -2038,11 +2032,10 @@ static void emit_service_edge(cbm_gbuf_t *gbuf, const cbm_gbuf_node_t *source,
     }
 
     if (svc == CBM_SVC_ROUTE_REG) {
-        const char *handler_ref = NULL;
-        const char *route_path = find_route_path_in_args(call, &handler_ref);
+        const char *route_path = find_route_path_in_args(call);
         if (route_path) {
-            emit_route_registration(gbuf, source, call, route_path, handler_ref, module_qn,
-                                    registry, main_gbuf, imp_keys, imp_vals, imp_count);
+            emit_route_registration(gbuf, source, call, route_path, module_qn, registry, main_gbuf,
+                                    imp_keys, imp_vals, imp_count);
             return;
         }
         /* No path found — fall through to normal CALLS edge */

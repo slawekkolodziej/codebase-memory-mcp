@@ -21,14 +21,10 @@
 enum { LEAN_MAX_PARENT_DEPTH = 20 };
 /* Max positional args to scan for URL/string. */
 enum { MAX_POSITIONAL_SCAN = 3 };
-/* Max positional args to scan for handler ref. */
-enum { MAX_HANDLER_SCAN = 4 };
 /* Max string arg length before rejection. */
 enum { MAX_STRING_ARG_LEN = CBM_SZ_512 };
 /* Min printable ASCII (space). */
 enum { MIN_PRINTABLE = 0x20 };
-/* Handler arg scan start index (skip first positional). */
-enum { HANDLER_START_IDX = 1 };
 
 /* Look up a module-level string constant by name. URL-builder entries share the
  * map but are not constants: a bare `thingPath` reference is the function, not
@@ -2331,7 +2327,6 @@ static const char *extract_url_or_topic_arg(CBMExtractCtx *ctx, TSNode args) {
     return NULL;
 }
 
-// Extract second argument name (handler ref for route registrations).
 /* Normalize a string-form route handler to a resolvable handler name.
  *   'showUsers'              → showUsers
  *   'UserController@show'    → show   (Laravel "Controller@method")
@@ -2348,31 +2343,90 @@ static const char *normalize_string_handler(CBMArena *a, const char *raw) {
     return unq;
 }
 
-static const char *extract_handler_arg(CBMExtractCtx *ctx, TSNode args) {
-    uint32_t nc = ts_node_named_child_count(args);
-    for (uint32_t ai = HANDLER_START_IDX; ai < nc && ai < MAX_HANDLER_SCAN; ai++) {
-        TSNode arg2 = ts_node_named_child(args, ai);
-        /* PHP wraps each argument in an `argument` node — unwrap to the value. */
-        if (strcmp(ts_node_type(arg2), "argument") == 0 && ts_node_named_child_count(arg2) > 0) {
-            arg2 = ts_node_named_child(arg2, 0);
-        }
-        const char *ak2 = ts_node_type(arg2);
-        /* `name` = PHP bare identifier handler; string = Laravel string handler
-         * ('showUsers' or 'Controller@method'). */
-        if (strcmp(ak2, "identifier") == 0 || strcmp(ak2, "member_expression") == 0 ||
-            strcmp(ak2, "selector_expression") == 0 || strcmp(ak2, "attribute") == 0 ||
-            strcmp(ak2, "field_expression") == 0 || strcmp(ak2, "name") == 0) {
-            return cbm_node_text(ctx->arena, arg2, ctx->source);
-        }
-        if (is_string_like(ak2)) {
-            const char *h =
-                normalize_string_handler(ctx->arena, cbm_node_text(ctx->arena, arg2, ctx->source));
-            if (h && h[0]) {
-                return h;
-            }
+static TSNode unwrap_route_handler_arg(TSNode arg) {
+    const char *kind = ts_node_type(arg);
+    if (strcmp(kind, "argument") == 0 && ts_node_named_child_count(arg) > 0) {
+        return ts_node_named_child(arg, 0);
+    }
+    if (strcmp(kind, "keyword_argument") == 0 || strcmp(kind, "pair") == 0) {
+        TSNode value = ts_node_child_by_field_name(arg, TS_FIELD("value"));
+        if (!ts_node_is_null(value)) {
+            return value;
         }
     }
-    return NULL;
+    return arg;
+}
+
+static bool is_inline_route_handler_kind(const char *kind) {
+    return strcmp(kind, "arrow_function") == 0 || strcmp(kind, "function_expression") == 0 ||
+           strcmp(kind, "lambda") == 0 || strcmp(kind, "lambda_expression") == 0 ||
+           strcmp(kind, "anonymous_function") == 0;
+}
+
+static bool is_route_handler_reference_kind(const char *kind) {
+    return strcmp(kind, "identifier") == 0 || strcmp(kind, "member_expression") == 0 ||
+           strcmp(kind, "selector_expression") == 0 || strcmp(kind, "attribute") == 0 ||
+           strcmp(kind, "field_expression") == 0 || strcmp(kind, "name") == 0;
+}
+
+/* Select a route handler from arguments after the route path, scanning from
+ * right to left.  Middleware identifiers/calls before the final handler are
+ * therefore never selected merely because they are easy to resolve. */
+static void extract_route_handler_arg(CBMExtractCtx *ctx, TSNode args, CBMCall *call) {
+    uint32_t nc = ts_node_named_child_count(args);
+    uint32_t path_index = nc;
+    call->route_handler_arg_index = CBM_NOT_FOUND;
+
+    for (uint32_t ai = 0; ai < nc; ai++) {
+        TSNode candidate = unwrap_route_handler_arg(ts_node_named_child(args, ai));
+        if (!is_string_like(ts_node_type(candidate))) {
+            continue;
+        }
+        const char *raw = cbm_node_text(ctx->arena, candidate, ctx->source);
+        const char *value = raw ? strip_quotes(ctx->arena, raw) : NULL;
+        if (value && value[0] == '/') {
+            path_index = ai;
+            break;
+        }
+    }
+    if (path_index == nc && call->first_string_arg && call->first_string_arg[0] == '/' && nc > 0) {
+        path_index = 0;
+    }
+    if (path_index >= nc || path_index + SKIP_ONE >= nc) {
+        return;
+    }
+
+    for (uint32_t ai = nc; ai-- > path_index + SKIP_ONE;) {
+        TSNode handler = unwrap_route_handler_arg(ts_node_named_child(args, ai));
+        const char *kind = ts_node_type(handler);
+        const char *ref = NULL;
+        CBMRouteHandlerKind handler_kind = CBM_ROUTE_HANDLER_NONE;
+
+        if (is_inline_route_handler_kind(kind)) {
+            handler_kind = CBM_ROUTE_HANDLER_INLINE;
+        } else if (is_route_handler_reference_kind(kind)) {
+            ref = cbm_node_text(ctx->arena, handler, ctx->source);
+            handler_kind = CBM_ROUTE_HANDLER_REFERENCE;
+        } else if (is_string_like(kind)) {
+            const char *h = normalize_string_handler(
+                ctx->arena, cbm_node_text(ctx->arena, handler, ctx->source));
+            if (h && h[0]) {
+                ref = h;
+                handler_kind = CBM_ROUTE_HANDLER_STRING;
+            }
+        }
+
+        if (handler_kind == CBM_ROUTE_HANDLER_NONE) {
+            continue;
+        }
+        call->route_handler_kind = handler_kind;
+        call->route_handler_ref = ref;
+        call->route_handler_arg_index = (int)ai;
+        call->route_handler_start_line = (int)ts_node_start_point(handler).row + TS_LINE_OFFSET;
+        call->route_handler_start_byte = ts_node_start_byte(handler);
+        call->route_handler_end_byte = ts_node_end_byte(handler);
+        return;
+    }
 }
 
 // Extract JSX component refs (uppercase tags) as CALLS edges.
@@ -3567,6 +3621,7 @@ CBMInvocationDescriptor handle_calls(CBMExtractCtx *ctx, TSNode node, const CBML
         // ...) so the LSP-resolved builtin call still forms a CALLS edge.
         if (primary_callee_name_is_allowed(ctx, &callee)) {
             CBMCall call = {0};
+            call.route_handler_arg_index = CBM_NOT_FOUND;
             call.callee_name = callee.name;
             call.enclosing_func_qn = state->enclosing_func_qn;
             call.loop_depth = state->loop_depth;     // enclosing loop nesting at this call
@@ -3647,7 +3702,7 @@ CBMInvocationDescriptor handle_calls(CBMExtractCtx *ctx, TSNode node, const CBML
                     }
                 }
                 if (call.first_string_arg && call.first_string_arg[0] == '/') {
-                    call.second_arg_name = extract_handler_arg(ctx, args);
+                    extract_route_handler_arg(ctx, args, &call);
                 }
                 if (ctx->language == CBM_LANG_OBJECTSCRIPT_UDL ||
                     ctx->language == CBM_LANG_OBJECTSCRIPT_ROUTINE) {

@@ -1063,8 +1063,8 @@ static void pxc_append_synthetic_calls(CBMArena *dst_arena, CBMCallArray *dst_ca
         dst.enclosing_func_qn = cbm_arena_strdup(dst_arena, src->enclosing_func_qn);
         dst.first_string_arg =
             src->first_string_arg ? cbm_arena_strdup(dst_arena, src->first_string_arg) : NULL;
-        dst.second_arg_name =
-            src->second_arg_name ? cbm_arena_strdup(dst_arena, src->second_arg_name) : NULL;
+        dst.route_handler_ref =
+            src->route_handler_ref ? cbm_arena_strdup(dst_arena, src->route_handler_ref) : NULL;
         for (int ai = 0; ai < CBM_MAX_CALL_ARGS; ai++) {
             dst.args[ai].expr =
                 src->args[ai].expr ? cbm_arena_strdup(dst_arena, src->args[ai].expr) : NULL;
